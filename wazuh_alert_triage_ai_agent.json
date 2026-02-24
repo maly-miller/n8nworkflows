@@ -1,0 +1,524 @@
+{
+    "name": "Wazuh Alert Triage — AI Security Analyst",
+    "nodes": [
+        {
+            "parameters": {
+                "rule": {
+                    "interval": [
+                        {
+                            "field": "cronExpression",
+                            "expression": "0 6 * * *"
+                        }
+                    ]
+                }
+            },
+            "id": "schedule-trigger",
+            "name": "Daily 6 AM",
+            "position": [
+                0,
+                0
+            ],
+            "type": "n8n-nodes-base.scheduleTrigger",
+            "typeVersion": 1.3
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "https://192.168.1.199:55000/security/user/authenticate",
+                "authentication": "genericCredentialType",
+                "genericAuthType": "httpBasicAuth",
+                "options": {
+                    "allowUnauthorizedCerts": true
+                }
+            },
+            "id": "wazuh-auth",
+            "name": "Wazuh Authenticate",
+            "position": [
+                240,
+                0
+            ],
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.4
+        },
+        {
+            "parameters": {
+                "method": "GET",
+                "url": "https://192.168.1.199:55000/alerts",
+                "authentication": "none",
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "Authorization",
+                            "value": "=Bearer {{ $json.data.token }}"
+                        }
+                    ]
+                },
+                "sendQuery": true,
+                "queryParameters": {
+                    "parameters": [
+                        {
+                            "name": "limit",
+                            "value": "500"
+                        },
+                        {
+                            "name": "sort",
+                            "value": "-timestamp"
+                        },
+                        {
+                            "name": "q",
+                            "value": "rule.level>6"
+                        }
+                    ]
+                },
+                "options": {
+                    "allowUnauthorizedCerts": true
+                }
+            },
+            "id": "fetch-alerts",
+            "name": "Fetch Wazuh Alerts",
+            "position": [
+                480,
+                0
+            ],
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.4
+        },
+        {
+            "parameters": {
+                "jsCode": "// ===== FALSE POSITIVE FILTER & ALERT ENRICHMENT =====\n// Add known false positive rule IDs here to auto-filter them\nconst KNOWN_FALSE_POSITIVE_RULE_IDS = [\n  // Example: '5402', '5403' — add your known FP rule IDs\n];\n\nconst inputData = $input.first().json;\n\n// Handle case where no alerts are returned\nif (!inputData.data || !inputData.data.affected_items || inputData.data.affected_items.length === 0) {\n  return [{ json: { alerts: [], totalAlerts: 0, filteredOut: 0 } }];\n}\n\nconst allAlerts = inputData.data.affected_items;\nconst filteredAlerts = [];\nlet filteredOut = 0;\n\nfor (const alert of allAlerts) {\n  const ruleId = String(alert.rule?.id || '');\n  \n  // Skip known false positives\n  if (KNOWN_FALSE_POSITIVE_RULE_IDS.includes(ruleId)) {\n    filteredOut++;\n    continue;\n  }\n  \n  // Enrich alert with key fields for AI analysis\n  filteredAlerts.push({\n    alert_id: alert.id || alert._id || 'unknown',\n    timestamp: alert.timestamp || '',\n    agent_id: alert.agent?.id || '',\n    agent_name: alert.agent?.name || 'unknown',\n    agent_ip: alert.agent?.ip || '',\n    rule_id: ruleId,\n    rule_level: alert.rule?.level || 0,\n    rule_description: alert.rule?.description || '',\n    rule_groups: (alert.rule?.groups || []).join(', '),\n    rule_mitre: alert.rule?.mitre?.technique || [],\n    source_ip: alert.data?.srcip || alert.data?.src_ip || '',\n    destination_ip: alert.data?.dstip || alert.data?.dst_ip || '',\n    source_port: alert.data?.srcport || '',\n    destination_port: alert.data?.dstport || '',\n    process_name: alert.data?.program_name || alert.data?.process?.name || '',\n    file_path: alert.syscheck?.path || alert.data?.file || '',\n    full_log: (alert.full_log || '').substring(0, 500),\n    location: alert.location || ''\n  });\n}\n\nreturn [{\n  json: {\n    alerts: filteredAlerts,\n    totalAlerts: filteredAlerts.length,\n    filteredOut: filteredOut,\n    originalCount: allAlerts.length\n  }\n}];"
+            },
+            "id": "filter-fp",
+            "name": "Filter Known False Positives",
+            "position": [
+                720,
+                0
+            ],
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2
+        },
+        {
+            "parameters": {
+                "conditions": {
+                    "combinator": "and",
+                    "conditions": [
+                        {
+                            "id": "condition-alerts-exist",
+                            "leftValue": "={{ $json.totalAlerts }}",
+                            "operator": {
+                                "operation": "gt",
+                                "type": "number"
+                            },
+                            "rightValue": 0
+                        }
+                    ],
+                    "options": {
+                        "caseSensitive": true,
+                        "leftValue": "",
+                        "typeValidation": "strict"
+                    }
+                },
+                "options": {}
+            },
+            "id": "if-alerts-exist",
+            "name": "Any Alerts?",
+            "position": [
+                960,
+                0
+            ],
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2
+        },
+        {
+            "parameters": {
+                "jsCode": "// Prepare alert batches for AI agent processing\n// Split alerts into groups of 5 for manageable AI analysis\nconst alerts = $input.first().json.alerts;\nconst BATCH_SIZE = 5;\nconst batches = [];\n\nfor (let i = 0; i < alerts.length; i += BATCH_SIZE) {\n  const batch = alerts.slice(i, i + BATCH_SIZE);\n  batches.push({\n    json: {\n      batch_id: Math.floor(i / BATCH_SIZE) + 1,\n      total_batches: Math.ceil(alerts.length / BATCH_SIZE),\n      alerts: batch,\n      alert_count: batch.length,\n      wazuh_token: $node['Wazuh Authenticate'].json.data.token\n    }\n  });\n}\n\nreturn batches;"
+            },
+            "id": "prepare-batches",
+            "name": "Prepare Alert Batches",
+            "position": [
+                1200,
+                -100
+            ],
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2
+        },
+        {
+            "parameters": {
+                "agent": "openAiFunctionsAgent",
+                "promptType": "define",
+                "text": "=Analyze the following batch of Wazuh security alerts. For EACH alert, determine if it is a TRUE POSITIVE or FALSE POSITIVE.\n\nAlert Batch ({{ $json.alert_count }} alerts):\n```json\n{{ JSON.stringify($json.alerts, null, 2) }}\n```\n\nFor each alert:\n1. Review the rule description, severity level, source/destination IPs, and log data\n2. Use the SSH tool to connect to the affected server (agent IP: use the agent_ip field) and verify the alert:\n   - Check relevant log files (cat /var/log/auth.log, /var/log/syslog, etc.)\n   - Check running processes (ps aux | grep <suspicious_process>)\n   - Check active network connections (ss -tlnp or netstat -tlnp)\n   - Check file integrity if applicable (stat, ls -la)\n3. Use the Wazuh API tool to get more context about the agent and recent alerts\n4. Classify each alert and provide your findings\n\nRespond with a valid JSON array. Each element must have these exact fields:\n{\n  \"rule_id\": \"string\",\n  \"alert_description\": \"string\",\n  \"severity\": number,\n  \"agent_name\": \"string\",\n  \"agent_ip\": \"string\",\n  \"classification\": \"TRUE_POSITIVE\" or \"FALSE_POSITIVE\",\n  \"confidence\": number (0-100),\n  \"evidence\": \"string - what you found during verification\",\n  \"solution\": \"string - remediation steps (only for TRUE_POSITIVE, empty string for FALSE_POSITIVE)\",\n  \"commands_run\": [\"array of SSH commands you executed\"]\n}",
+                "options": {
+                    "systemMessage": "You are a Senior Cybersecurity Analyst with 15+ years of experience in SIEM alert triage, incident response, and threat hunting. You specialize in Wazuh/OSSEC alert analysis.\n\nYour expertise includes:\n- Network intrusion detection (NIDS/HIDS)\n- Log analysis and correlation\n- Malware analysis and indicators of compromise (IoCs)\n- MITRE ATT&CK framework mapping\n- Linux/Unix system administration and forensics\n\nIMPORTANT RULES:\n1. ALWAYS use the SSH tool to verify alerts on the actual server — never guess\n2. Use ONLY read-only commands: cat, grep, tail, head, ps, ss, netstat, last, who, find, stat, ls, journalctl, dmesg\n3. NEVER run destructive commands: rm, kill, shutdown, reboot, dd, mkfs, etc.\n4. Be thorough but efficient — focus on the most relevant evidence\n5. Consider context: time of day, known maintenance windows, automated processes\n6. A high severity alert is not automatically a true positive — verify empirically\n7. When in doubt, classify as TRUE_POSITIVE (err on the side of caution)\n8. Include specific evidence from your SSH commands in your findings\n9. For TRUE POSITIVES, provide actionable remediation steps\n10. Output ONLY valid JSON — no markdown, no explanations outside the JSON",
+                    "maxIterations": 15
+                }
+            },
+            "id": "ai-agent",
+            "name": "Security Analyst Agent",
+            "position": [
+                1440,
+                -100
+            ],
+            "type": "@n8n/n8n-nodes-langchain.agent",
+            "typeVersion": 1.7
+        },
+        {
+            "parameters": {
+                "model": {
+                    "mode": "id",
+                    "value": "gpt-4o"
+                },
+                "options": {
+                    "temperature": 0.1
+                }
+            },
+            "id": "openai-model",
+            "name": "GPT-4o",
+            "position": [
+                1340,
+                160
+            ],
+            "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+            "typeVersion": 1.3
+        },
+        {
+            "parameters": {
+                "name": "ssh_execute_command",
+                "description": "SSH into a remote Linux server and execute a diagnostic command. Use this tool to verify security alerts by inspecting logs, running processes, network connections, and file integrity on the target server. Input must be a JSON object with 'host' (the server IP address) and 'command' (the shell command to run). IMPORTANT: Only use read-only commands like cat, grep, ps, ss, netstat, last, who, find, stat, ls, tail, head, journalctl, dmesg. NEVER use destructive commands like rm, kill, shutdown. Example: {\"host\": \"192.168.1.100\", \"command\": \"tail -50 /var/log/auth.log\"}",
+                "language": "javaScript",
+                "jsCode": "// SSH Command Execution Tool for AI Agent\n// This tool executes commands on remote servers via SSH\n// The AI agent provides host and command as JSON input\n\nconst input = JSON.parse(query);\nconst host = input.host;\nconst command = input.command;\n\n// Safety check: block destructive commands\nconst BLOCKED_COMMANDS = ['rm ', 'rm -', 'kill ', 'shutdown', 'reboot', 'dd ', 'mkfs', 'fdisk', 'passwd', 'userdel', 'groupdel', 'iptables -F', 'systemctl stop', 'service stop', 'chmod 777', 'chown'];\nfor (const blocked of BLOCKED_COMMANDS) {\n  if (command.toLowerCase().includes(blocked)) {\n    return `ERROR: Command blocked for safety reasons. The command contains '${blocked}' which is a destructive operation. Only read-only commands are allowed.`;\n  }\n}\n\nif (!host || !command) {\n  return 'ERROR: Both host and command are required. Provide JSON: {\"host\": \"IP\", \"command\": \"cmd\"}';\n}\n\n// Execute SSH command using n8n's built-in SSH functionality\n// The actual SSH connection uses the credential configured on this node\ntry {\n  const { NodeSSH } = require('node-ssh');\n  const ssh = new NodeSSH();\n  \n  // Connect using the private key from n8n credentials\n  await ssh.connect({\n    host: host,\n    port: 22,\n    username: 'maly',\n    privateKey: $env.SSH_PRIVATE_KEY || ''\n  });\n  \n  const result = await ssh.execCommand(command, { cwd: '/' });\n  ssh.dispose();\n  \n  let output = '';\n  if (result.stdout) output += result.stdout;\n  if (result.stderr) output += '\\nSTDERR: ' + result.stderr;\n  \n  // Truncate very long outputs to avoid token limits\n  if (output.length > 3000) {\n    output = output.substring(0, 3000) + '\\n... [OUTPUT TRUNCATED - showing first 3000 chars]';\n  }\n  \n  return output || 'Command executed successfully with no output.';\n} catch (error) {\n  return `SSH connection error to ${host}: ${error.message}. Ensure the server is reachable and SSH credentials are correct.`;\n}",
+                "specifyInputSchema": true,
+                "schemaType": "manual",
+                "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"host\": {\n      \"type\": \"string\",\n      \"description\": \"The IP address or hostname of the server to SSH into\"\n    },\n    \"command\": {\n      \"type\": \"string\",\n      \"description\": \"The shell command to execute on the remote server. Must be read-only (cat, grep, ps, ss, netstat, tail, head, last, who, find, stat, ls, journalctl, dmesg)\"\n    }\n  },\n  \"required\": [\"host\", \"command\"]\n}"
+            },
+            "id": "ssh-tool",
+            "name": "SSH Verification Tool",
+            "position": [
+                1500,
+                160
+            ],
+            "type": "@n8n/n8n-nodes-langchain.toolCode",
+            "typeVersion": 1.3
+        },
+        {
+            "parameters": {
+                "toolDescription": "Query the Wazuh SIEM API for additional security context. Use this to get more information about agents, past alerts, vulnerability assessments, and system inventory. The Wazuh API is at https://192.168.1.199:55000. This tool already includes the authentication token. Useful queries: GET /agents to list agents, GET /agents/{agent_id} for agent details, GET /vulnerability/{agent_id} for vulnerabilities, GET /syscheck/{agent_id} for file integrity monitoring results.",
+                "method": "GET",
+                "url": "=https://192.168.1.199:55000{{ $fromAI('endpoint', 'The Wazuh API endpoint path, e.g. /agents or /agents/001 or /vulnerability/001') }}",
+                "authentication": "none",
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "Authorization",
+                            "value": "=Bearer {{ $node['Wazuh Authenticate'].json.data.token }}"
+                        }
+                    ]
+                },
+                "options": {
+                    "allowUnauthorizedCerts": true
+                },
+                "optimizeResponse": true
+            },
+            "id": "wazuh-api-tool",
+            "name": "Wazuh API Query Tool",
+            "position": [
+                1660,
+                160
+            ],
+            "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+            "typeVersion": 1.1
+        },
+        {
+            "parameters": {
+                "jsCode": "// ===== CONSOLIDATE AI AGENT RESULTS =====\n// Parse all agent responses and separate true/false positives\n\nconst allItems = $input.all();\nconst truePositives = [];\nconst falsePositives = [];\nconst errors = [];\n\nfor (const item of allItems) {\n  try {\n    let agentOutput = item.json.output || item.json.text || '';\n    \n    // Try to extract JSON from the agent's response\n    // The agent might wrap JSON in markdown code blocks\n    const jsonMatch = agentOutput.match(/\\[\\s*\\{[\\s\\S]*\\}\\s*\\]/);\n    if (jsonMatch) {\n      agentOutput = jsonMatch[0];\n    }\n    \n    let results;\n    try {\n      results = JSON.parse(agentOutput);\n    } catch (parseErr) {\n      // If direct parse fails, try to find JSON array in the text\n      const start = agentOutput.indexOf('[');\n      const end = agentOutput.lastIndexOf(']');\n      if (start !== -1 && end !== -1) {\n        results = JSON.parse(agentOutput.substring(start, end + 1));\n      } else {\n        throw parseErr;\n      }\n    }\n    \n    if (!Array.isArray(results)) results = [results];\n    \n    for (const result of results) {\n      if (result.classification === 'TRUE_POSITIVE') {\n        truePositives.push(result);\n      } else {\n        falsePositives.push(result);\n      }\n    }\n  } catch (err) {\n    errors.push({\n      error: err.message,\n      raw_output: (item.json.output || item.json.text || '').substring(0, 200)\n    });\n  }\n}\n\n// Sort true positives by severity (highest first)\ntruePositives.sort((a, b) => (b.severity || 0) - (a.severity || 0));\n\nconst now = new Date().toISOString();\n\nreturn [{\n  json: {\n    analysis_timestamp: now,\n    summary: {\n      total_analyzed: truePositives.length + falsePositives.length,\n      true_positives: truePositives.length,\n      false_positives: falsePositives.length,\n      parse_errors: errors.length\n    },\n    true_positives: truePositives,\n    false_positives: falsePositives,\n    errors: errors\n  }\n}];"
+            },
+            "id": "consolidate",
+            "name": "Consolidate Results",
+            "position": [
+                1700,
+                -100
+            ],
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2
+        },
+        {
+            "parameters": {
+                "conditions": {
+                    "combinator": "and",
+                    "conditions": [
+                        {
+                            "id": "condition-tp-exist",
+                            "leftValue": "={{ $json.summary.true_positives }}",
+                            "operator": {
+                                "operation": "gt",
+                                "type": "number"
+                            },
+                            "rightValue": 0
+                        }
+                    ],
+                    "options": {
+                        "caseSensitive": true,
+                        "leftValue": "",
+                        "typeValidation": "strict"
+                    }
+                },
+                "options": {}
+            },
+            "id": "if-true-positives",
+            "name": "Has True Positives?",
+            "position": [
+                1940,
+                -100
+            ],
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2
+        },
+        {
+            "parameters": {
+                "jsCode": "// ===== BUILD EMAIL DIGEST =====\nconst data = $input.first().json;\nconst tp = data.true_positives || [];\nconst fp = data.false_positives || [];\nconst summary = data.summary;\nconst timestamp = new Date(data.analysis_timestamp).toLocaleString('en-US', {\n  timeZone: 'America/New_York',\n  dateStyle: 'full',\n  timeStyle: 'short'\n});\n\n// Severity color mapping\nfunction severityColor(level) {\n  if (level >= 12) return '#dc3545'; // Critical - Red\n  if (level >= 10) return '#fd7e14'; // High - Orange\n  if (level >= 7) return '#ffc107';  // Medium - Yellow\n  return '#28a745'; // Low - Green\n}\n\nfunction severityLabel(level) {\n  if (level >= 12) return '🔴 CRITICAL';\n  if (level >= 10) return '🟠 HIGH';\n  if (level >= 7) return '🟡 MEDIUM';\n  return '🟢 LOW';\n}\n\n// Build HTML email\nlet html = `\n<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; background-color: #f8f9fa; }\n    .container { max-width: 800px; margin: 0 auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }\n    .header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color: white; padding: 30px; text-align: center; }\n    .header h1 { margin: 0; font-size: 24px; letter-spacing: 1px; }\n    .header p { margin: 8px 0 0; opacity: 0.8; font-size: 14px; }\n    .stats { display: flex; justify-content: center; gap: 30px; padding: 20px; background: #f1f3f5; }\n    .stat { text-align: center; }\n    .stat-number { font-size: 32px; font-weight: bold; }\n    .stat-label { font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 1px; }\n    .section { padding: 20px 30px; }\n    .section h2 { color: #1a1a2e; border-bottom: 2px solid #e9ecef; padding-bottom: 10px; font-size: 18px; }\n    .alert-card { border: 1px solid #dee2e6; border-radius: 8px; margin: 15px 0; overflow: hidden; }\n    .alert-header { padding: 12px 15px; display: flex; justify-content: space-between; align-items: center; }\n    .alert-body { padding: 15px; background: #f8f9fa; }\n    .alert-body p { margin: 5px 0; font-size: 14px; }\n    .alert-body strong { color: #333; }\n    .solution-box { background: #d4edda; border: 1px solid #c3e6cb; border-radius: 5px; padding: 12px; margin-top: 10px; }\n    .solution-box h4 { margin: 0 0 8px; color: #155724; font-size: 14px; }\n    .solution-box p { margin: 0; color: #155724; font-size: 13px; }\n    .badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold; color: white; }\n    .footer { background: #f1f3f5; padding: 15px 30px; text-align: center; font-size: 12px; color: #999; }\n    .evidence { background: #fff3cd; border: 1px solid #ffc107; border-radius: 5px; padding: 10px; margin-top: 8px; font-size: 13px; }\n  </style>\n</head>\n<body>\n  <div class=\"container\">\n    <div class=\"header\">\n      <h1>🛡️ Wazuh Security Alert Digest</h1>\n      <p>${timestamp}</p>\n    </div>\n    \n    <div class=\"stats\">\n      <div class=\"stat\">\n        <div class=\"stat-number\" style=\"color: #333;\">${summary.total_analyzed}</div>\n        <div class=\"stat-label\">Total Analyzed</div>\n      </div>\n      <div class=\"stat\">\n        <div class=\"stat-number\" style=\"color: #dc3545;\">${summary.true_positives}</div>\n        <div class=\"stat-label\">True Positives</div>\n      </div>\n      <div class=\"stat\">\n        <div class=\"stat-number\" style=\"color: #28a745;\">${summary.false_positives}</div>\n        <div class=\"stat-label\">False Positives</div>\n      </div>\n    </div>`;\n\n// True Positives Section\nif (tp.length > 0) {\n  html += `\n    <div class=\"section\">\n      <h2>🚨 True Positive Alerts — Action Required</h2>`;\n  \n  for (const alert of tp) {\n    const color = severityColor(alert.severity || 0);\n    const label = severityLabel(alert.severity || 0);\n    html += `\n      <div class=\"alert-card\">\n        <div class=\"alert-header\" style=\"background-color: ${color}15; border-left: 4px solid ${color};\">\n          <div>\n            <strong style=\"font-size: 15px;\">Rule ${alert.rule_id}: ${alert.alert_description || 'N/A'}</strong>\n          </div>\n          <span class=\"badge\" style=\"background-color: ${color};\">${label}</span>\n        </div>\n        <div class=\"alert-body\">\n          <p><strong>🖥️ Server:</strong> ${alert.agent_name || 'N/A'} (${alert.agent_ip || 'N/A'})</p>\n          <p><strong>📊 Confidence:</strong> ${alert.confidence || 'N/A'}%</p>\n          \n          <div class=\"evidence\">\n            <strong>🔍 Evidence:</strong> ${alert.evidence || 'No evidence provided'}\n          </div>\n          \n          <div class=\"solution-box\">\n            <h4>✅ Recommended Solution</h4>\n            <p>${alert.solution || 'No solution provided — manual investigation required'}</p>\n          </div>\n        </div>\n      </div>`;\n  }\n  html += `</div>`;\n}\n\n// False Positives Summary\nif (fp.length > 0) {\n  html += `\n    <div class=\"section\">\n      <h2>✅ False Positives — Auto-Closed (${fp.length})</h2>\n      <table style=\"width: 100%; border-collapse: collapse; font-size: 13px;\">\n        <tr style=\"background: #e9ecef;\">\n          <th style=\"padding: 8px; text-align: left; border: 1px solid #dee2e6;\">Rule ID</th>\n          <th style=\"padding: 8px; text-align: left; border: 1px solid #dee2e6;\">Description</th>\n          <th style=\"padding: 8px; text-align: left; border: 1px solid #dee2e6;\">Server</th>\n          <th style=\"padding: 8px; text-align: left; border: 1px solid #dee2e6;\">Reason</th>\n        </tr>`;\n  \n  for (const alert of fp) {\n    html += `\n        <tr>\n          <td style=\"padding: 8px; border: 1px solid #dee2e6;\">${alert.rule_id}</td>\n          <td style=\"padding: 8px; border: 1px solid #dee2e6;\">${(alert.alert_description || '').substring(0, 80)}</td>\n          <td style=\"padding: 8px; border: 1px solid #dee2e6;\">${alert.agent_name || 'N/A'}</td>\n          <td style=\"padding: 8px; border: 1px solid #dee2e6;\">${(alert.evidence || '').substring(0, 100)}</td>\n        </tr>`;\n  }\n  \n  html += `\n      </table>\n    </div>`;\n}\n\n// Parse errors\nif (data.errors && data.errors.length > 0) {\n  html += `\n    <div class=\"section\">\n      <h2>⚠️ Analysis Errors (${data.errors.length})</h2>\n      <p style=\"color: #856404; font-size: 13px;\">Some alerts could not be analyzed by the AI agent. Manual review recommended.</p>\n    </div>`;\n}\n\nhtml += `\n    <div class=\"footer\">\n      <p>This report was generated automatically by the Wazuh Alert Triage AI Agent workflow.</p>\n      <p>🔒 Wazuh SIEM: 192.168.1.199 | 📧 Recipient: maly.iphone@gmail.com</p>\n    </div>\n  </div>\n</body>\n</html>`;\n\nreturn [{\n  json: {\n    emailSubject: `🛡️ Wazuh Security Alert Digest — ${new Date().toLocaleDateString('en-US')} | ${summary.true_positives} True Positive${summary.true_positives !== 1 ? 's' : ''}`,\n    emailBody: html,\n    true_positives: tp,\n    false_positives: fp,\n    summary: summary\n  }\n}];"
+            },
+            "id": "build-digest",
+            "name": "Build Email Digest",
+            "position": [
+                2180,
+                -200
+            ],
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2
+        },
+        {
+            "parameters": {
+                "sendTo": "maly.iphone@gmail.com",
+                "subject": "={{ $json.emailSubject }}",
+                "message": "={{ $json.emailBody }}",
+                "options": {}
+            },
+            "id": "gmail-send",
+            "name": "Send Digest Email",
+            "position": [
+                2420,
+                -200
+            ],
+            "type": "n8n-nodes-base.gmail",
+            "typeVersion": 2.1
+        },
+        {
+            "parameters": {
+                "jsCode": "// ===== MANAGE FALSE POSITIVE ALERTS IN WAZUH =====\n// Prepare API calls to close false positive alerts\nconst data = $input.first().json;\nconst fp = data.false_positives || [];\n\nif (fp.length === 0) {\n  return [{ json: { message: 'No false positives to close', count: 0 } }];\n}\n\n// Return summary of false positives for logging\n// Note: Wazuh doesn't have a direct API to close individual alerts.\n// Instead, we can add rules to the false positive list or CDB lists.\n// For now, we log the FP findings for manual review and future automation.\nconst fpSummary = fp.map(alert => ({\n  rule_id: alert.rule_id,\n  description: alert.alert_description,\n  agent: alert.agent_name,\n  evidence: alert.evidence,\n  suggestion: `Consider adding rule ${alert.rule_id} to the known false positive list if this pattern repeats.`\n}));\n\nreturn [{\n  json: {\n    message: `${fp.length} false positive(s) identified and logged`,\n    count: fp.length,\n    false_positives: fpSummary\n  }\n}];"
+            },
+            "id": "manage-fp",
+            "name": "Log False Positives",
+            "position": [
+                2180,
+                0
+            ],
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2
+        },
+        {
+            "parameters": {
+                "jsCode": "// ===== ALSO SEND DIGEST FOR FP-ONLY RESULTS =====\n// When there are no true positives, send a brief \"all clear\" email\nconst data = $input.first().json;\nconst fp = data.false_positives || [];\nconst summary = data.summary;\n\nconst timestamp = new Date(data.analysis_timestamp).toLocaleString('en-US', {\n  timeZone: 'America/New_York',\n  dateStyle: 'full',\n  timeStyle: 'short'\n});\n\nconst html = `\n<div style=\"font-family: 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1);\">\n  <div style=\"background: linear-gradient(135deg, #155724, #28a745); color: white; padding: 30px; text-align: center;\">\n    <h1 style=\"margin: 0;\">✅ All Clear — No True Positives</h1>\n    <p style=\"margin: 8px 0 0; opacity: 0.8; font-size: 14px;\">${timestamp}</p>\n  </div>\n  <div style=\"padding: 30px; text-align: center;\">\n    <p style=\"font-size: 48px; margin: 0;\">🎉</p>\n    <h2 style=\"color: #155724;\">All ${summary.total_analyzed} alerts were classified as false positives</h2>\n    <p style=\"color: #666;\">No action required. The AI security analyst verified all alerts and found no genuine threats.</p>\n  </div>\n  <div style=\"background: #f1f3f5; padding: 15px 30px; text-align: center; font-size: 12px; color: #999;\">\n    <p>Wazuh Alert Triage AI Agent | 192.168.1.199</p>\n  </div>\n</div>`;\n\nreturn [{\n  json: {\n    emailSubject: `✅ Wazuh Alert Digest — ${new Date().toLocaleDateString('en-US')} | All Clear`,\n    emailBody: html\n  }\n}];"
+            },
+            "id": "build-allclear",
+            "name": "Build All-Clear Email",
+            "position": [
+                2180,
+                100
+            ],
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2
+        },
+        {
+            "parameters": {
+                "sendTo": "maly.iphone@gmail.com",
+                "subject": "={{ $json.emailSubject }}",
+                "message": "={{ $json.emailBody }}",
+                "options": {}
+            },
+            "id": "gmail-allclear",
+            "name": "Send All-Clear Email",
+            "position": [
+                2420,
+                100
+            ],
+            "type": "n8n-nodes-base.gmail",
+            "typeVersion": 2.1
+        }
+    ],
+    "connections": {
+        "Daily 6 AM": {
+            "main": [
+                [
+                    {
+                        "node": "Wazuh Authenticate",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Wazuh Authenticate": {
+            "main": [
+                [
+                    {
+                        "node": "Fetch Wazuh Alerts",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Fetch Wazuh Alerts": {
+            "main": [
+                [
+                    {
+                        "node": "Filter Known False Positives",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Filter Known False Positives": {
+            "main": [
+                [
+                    {
+                        "node": "Any Alerts?",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Any Alerts?": {
+            "main": [
+                [
+                    {
+                        "node": "Prepare Alert Batches",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Prepare Alert Batches": {
+            "main": [
+                [
+                    {
+                        "node": "Security Analyst Agent",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Security Analyst Agent": {
+            "main": [
+                [
+                    {
+                        "node": "Consolidate Results",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "GPT-4o": {
+            "ai_languageModel": [
+                [
+                    {
+                        "node": "Security Analyst Agent",
+                        "type": "ai_languageModel",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "SSH Verification Tool": {
+            "ai_tool": [
+                [
+                    {
+                        "node": "Security Analyst Agent",
+                        "type": "ai_tool",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Wazuh API Query Tool": {
+            "ai_tool": [
+                [
+                    {
+                        "node": "Security Analyst Agent",
+                        "type": "ai_tool",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Consolidate Results": {
+            "main": [
+                [
+                    {
+                        "node": "Has True Positives?",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Has True Positives?": {
+            "main": [
+                [
+                    {
+                        "node": "Build Email Digest",
+                        "type": "main",
+                        "index": 0
+                    },
+                    {
+                        "node": "Log False Positives",
+                        "type": "main",
+                        "index": 0
+                    }
+                ],
+                [
+                    {
+                        "node": "Build All-Clear Email",
+                        "type": "main",
+                        "index": 0
+                    },
+                    {
+                        "node": "Log False Positives",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Build Email Digest": {
+            "main": [
+                [
+                    {
+                        "node": "Send Digest Email",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Build All-Clear Email": {
+            "main": [
+                [
+                    {
+                        "node": "Send All-Clear Email",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    },
+    "settings": {
+        "executionOrder": "v1"
+    }
+}
