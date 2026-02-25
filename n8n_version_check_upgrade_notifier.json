@@ -14,7 +14,10 @@
       },
       "id": "schedule-trigger",
       "name": "Weekly Monday 9AM",
-      "position": [0, 0],
+      "position": [
+        0,
+        0
+      ],
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.3
     },
@@ -25,7 +28,10 @@
       },
       "id": "ssh-get-version",
       "name": "Get Installed Version",
-      "position": [224, 0],
+      "position": [
+        224,
+        0
+      ],
       "type": "n8n-nodes-base.ssh",
       "typeVersion": 1
     },
@@ -49,17 +55,23 @@
       },
       "id": "http-github-release",
       "name": "Get Latest GitHub Release",
-      "position": [448, 0],
+      "position": [
+        448,
+        0
+      ],
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4
     },
     {
       "parameters": {
-        "jsCode": "// Get SSH output (installed version)\nconst sshOutput = $node[\"Get Installed Version\"].json.stdout;\nconst installedVersion = sshOutput.trim();\n\n// Get GitHub release data\nconst githubData = $node[\"Get Latest GitHub Release\"].json;\nconst latestTag = githubData.tag_name;\nconst latestVersion = latestTag.replace(/^n8n@/, '').replace(/^v/, '');\nconst releaseUrl = githubData.html_url;\nconst releaseName = githubData.name || latestTag;\nconst publishedAt = githubData.published_at;\n\nfunction parseVersion(v) {\n  const clean = v.replace(/^n8n@/, '').replace(/^v/, '').trim();\n  const parts = clean.split('.').map(Number);\n  return { major: parts[0] || 0, minor: parts[1] || 0, patch: parts[2] || 0, raw: clean };\n}\n\nconst installed = parseVersion(installedVersion);\nconst latest = parseVersion(latestVersion);\n\nlet needsUpgrade = false;\nif (latest.major > installed.major) {\n  needsUpgrade = true;\n} else if (latest.major === installed.major && latest.minor > installed.minor) {\n  needsUpgrade = true;\n} else if (latest.major === installed.major && latest.minor === installed.minor && latest.patch > installed.patch) {\n  needsUpgrade = true;\n}\n\nreturn [{\n  json: {\n    installedVersion: installed.raw,\n    latestVersion: latest.raw,\n    needsUpgrade,\n    releaseUrl,\n    releaseName,\n    publishedAt\n  }\n}];"
+        "jsCode": "// Get SSH output (installed version)\nconst sshOutput = $node[\"Get Installed Version\"].json.stdout;\nconst installedVersion = sshOutput.trim();\n\n// Get GitHub release data\nconst githubData = $node[\"Get Latest GitHub Release\"].json;\nconst latestTag = githubData.tag_name; // e.g. \"n8n@1.75.2\" or \"1.75.2\"\nconst latestVersion = latestTag.replace(/^n8n@/, '').replace(/^v/, '');\nconst releaseUrl = githubData.html_url;\nconst releaseName = githubData.name || latestTag;\nconst publishedAt = githubData.published_at;\n\n// Parse version strings into comparable numbers\nfunction parseVersion(v) {\n  const clean = v.replace(/^n8n@/, '').replace(/^v/, '').trim();\n  const parts = clean.split('.').map(Number);\n  return { major: parts[0] || 0, minor: parts[1] || 0, patch: parts[2] || 0, raw: clean };\n}\n\nconst installed = parseVersion(installedVersion);\nconst latest = parseVersion(latestVersion);\n\n// Compare versions\nlet needsUpgrade = false;\nif (latest.major > installed.major) {\n  needsUpgrade = true;\n} else if (latest.major === installed.major && latest.minor > installed.minor) {\n  needsUpgrade = true;\n} else if (latest.major === installed.major && latest.minor === installed.minor && latest.patch > installed.patch) {\n  needsUpgrade = true;\n}\n\nreturn [{\n  json: {\n    installedVersion: installed.raw,\n    latestVersion: latest.raw,\n    needsUpgrade,\n    releaseUrl,\n    releaseName,\n    publishedAt\n  }\n}];"
       },
       "id": "code-compare",
       "name": "Compare Versions",
-      "position": [672, 0],
+      "position": [
+        672,
+        0
+      ],
       "type": "n8n-nodes-base.code",
       "typeVersion": 2
     },
@@ -88,7 +100,10 @@
       },
       "id": "if-needs-upgrade",
       "name": "Upgrade Available?",
-      "position": [880, 0],
+      "position": [
+        880,
+        0
+      ],
       "type": "n8n-nodes-base.if",
       "typeVersion": 2
     },
@@ -101,26 +116,69 @@
       },
       "id": "gmail-send",
       "name": "Send Upgrade Email",
-      "position": [1104, -96],
+      "position": [
+        1104,
+        -96
+      ],
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.1
     }
   ],
   "connections": {
     "Compare Versions": {
-      "main": [[{"index": 0, "node": "Upgrade Available?", "type": "main"}]]
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Upgrade Available?",
+            "type": "main"
+          }
+        ]
+      ]
     },
     "Get Installed Version": {
-      "main": [[{"index": 0, "node": "Get Latest GitHub Release", "type": "main"}]]
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Get Latest GitHub Release",
+            "type": "main"
+          }
+        ]
+      ]
     },
     "Get Latest GitHub Release": {
-      "main": [[{"index": 0, "node": "Compare Versions", "type": "main"}]]
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Compare Versions",
+            "type": "main"
+          }
+        ]
+      ]
     },
     "Upgrade Available?": {
-      "main": [[{"index": 0, "node": "Send Upgrade Email", "type": "main"}]]
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Send Upgrade Email",
+            "type": "main"
+          }
+        ]
+      ]
     },
     "Weekly Monday 9AM": {
-      "main": [[{"index": 0, "node": "Get Installed Version", "type": "main"}]]
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Get Installed Version",
+            "type": "main"
+          }
+        ]
+      ]
     }
   },
   "settings": {
