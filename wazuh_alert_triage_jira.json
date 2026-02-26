@@ -1,540 +1,167 @@
 {
-    "updatedAt": "2026-02-26T00:56:59.187Z",
+    "updatedAt": "2026-02-26T21:00:41.402Z",
     "createdAt": "2026-02-26T00:50:39.153Z",
     "id": "6iaJCeZXINKP2Ssz",
     "name": "Wazuh Alert Triage \u2014 Jira Ticket Creator",
-    "description": null,
     "active": false,
-    "isArchived": false,
     "nodes": [
         {
-            "parameters": {
-                "rule": {
-                    "interval": [
-                        {
-                            "field": "cronExpression",
-                            "expression": "0 6 * * *"
-                        }
-                    ]
-                }
-            },
+            "parameters": {"rule": {"interval": [{"field": "cronExpression", "expression": "0 6 * * *"}]}},
             "id": "schedule-trigger",
             "name": "Daily 6 AM",
-            "position": [
-                0,
-                0
-            ],
+            "position": [0, 0],
             "type": "n8n-nodes-base.scheduleTrigger",
             "typeVersion": 1.3
         },
         {
-            "parameters": {
-                "method": "POST",
-                "url": "https://192.168.1.199:55000/security/user/authenticate",
-                "authentication": "genericCredentialType",
-                "genericAuthType": "httpBasicAuth",
-                "options": {
-                    "allowUnauthorizedCerts": true
-                }
-            },
+            "parameters": {"method": "POST", "url": "https://192.168.1.199:55000/security/user/authenticate", "authentication": "genericCredentialType", "genericAuthType": "httpBasicAuth", "options": {"allowUnauthorizedCerts": true}},
             "id": "wazuh-auth",
             "name": "Wazuh Authenticate",
-            "position": [
-                240,
-                0
-            ],
+            "position": [240, 0],
             "type": "n8n-nodes-base.httpRequest",
             "typeVersion": 4.4,
-            "credentials": {
-                "httpBasicAuth": {
-                    "id": "BfOV5Au7TEzJtVK4",
-                    "name": "Wazuh API"
-                }
-            }
+            "credentials": {"httpBasicAuth": {"id": "BfOV5Au7TEzJtVK4", "name": "Wazuh API"}}
         },
         {
-            "parameters": {
-                "method": "POST",
-                "url": "https://192.168.1.199:9200/wazuh-alerts-4.x-*/_search",
-                "authentication": "genericCredentialType",
-                "genericAuthType": "httpBasicAuth",
-                "sendHeaders": true,
-                "headerParameters": {
-                    "parameters": [
-                        {
-                            "name": "Content-Type",
-                            "value": "application/json"
-                        }
-                    ]
-                },
-                "sendBody": true,
-                "specifyBody": "json",
-                "jsonBody": "={\n  \"size\": 500,\n  \"sort\": [{\"timestamp\": {\"order\": \"desc\"}}],\n  \"query\": {\n    \"bool\": {\n      \"must\": [\n        {\"range\": {\"rule.level\": {\"gte\": 7}}},\n        {\"range\": {\"timestamp\": {\"gte\": \"now-24h\"}}}\n      ]\n    }\n  }\n}",
-                "options": {
-                    "allowUnauthorizedCerts": true
-                }
-            },
+            "parameters": {"method": "POST", "url": "https://192.168.1.199:9200/wazuh-alerts-4.x-*/_search", "authentication": "genericCredentialType", "genericAuthType": "httpBasicAuth", "sendHeaders": true, "headerParameters": {"parameters": [{"name": "Content-Type", "value": "application/json"}]}, "sendBody": true, "specifyBody": "json", "jsonBody": "={\n  \"size\": 500,\n  \"sort\": [{\"timestamp\": {\"order\": \"desc\"}}],\n  \"query\": {\n    \"bool\": {\n      \"must\": [\n        {\"range\": {\"rule.level\": {\"gte\": 7}}},\n        {\"range\": {\"timestamp\": {\"gte\": \"now-24h\"}}}\n      ]\n    }\n  }\n}", "options": {"allowUnauthorizedCerts": true}},
             "id": "fetch-alerts",
             "name": "Fetch Wazuh Alerts",
-            "position": [
-                480,
-                0
-            ],
+            "position": [480, 0],
             "type": "n8n-nodes-base.httpRequest",
             "typeVersion": 4.4,
-            "credentials": {
-                "httpBasicAuth": {
-                    "id": "adDiO0fayX64eJs7",
-                    "name": "Wazuh Indexer"
-                }
-            }
+            "credentials": {"httpBasicAuth": {"id": "adDiO0fayX64eJs7", "name": "Wazuh Indexer"}}
         },
         {
-            "parameters": {
-                "jsCode": "// ===== FALSE POSITIVE FILTER & ALERT ENRICHMENT =====\n// Add known false positive rule IDs here to auto-filter them\nconst KNOWN_FALSE_POSITIVE_RULE_IDS = [\n  // Example: '5402', '5403' \u2014 add your known FP rule IDs\n];\n\nconst inputData = $input.first().json;\n\n// Handle Wazuh Indexer (OpenSearch) response format: hits.hits[]._source\nconst hits = inputData.hits?.hits || [];\nif (hits.length === 0) {\n  return [{ json: { alerts: [], totalAlerts: 0, filteredOut: 0 } }];\n}\n\nconst filteredAlerts = [];\nlet filteredOut = 0;\n\nfor (const hit of hits) {\n  const alert = hit._source;\n  const ruleId = String(alert.rule?.id || '');\n  \n  // Skip known false positives\n  if (KNOWN_FALSE_POSITIVE_RULE_IDS.includes(ruleId)) {\n    filteredOut++;\n    continue;\n  }\n  \n  // Enrich alert with key fields for AI analysis\n  filteredAlerts.push({\n    alert_id: hit._id || 'unknown',\n    timestamp: alert.timestamp || '',\n    agent_id: alert.agent?.id || '',\n    agent_name: alert.agent?.name || 'unknown',\n    agent_ip: alert.agent?.ip || '',\n    rule_id: ruleId,\n    rule_level: alert.rule?.level || 0,\n    rule_description: alert.rule?.description || '',\n    rule_groups: (alert.rule?.groups || []).join(', '),\n    rule_mitre: alert.rule?.mitre?.technique || [],\n    rule_pci_dss: alert.rule?.pci_dss || [],\n    source_ip: alert.data?.srcip || alert.data?.src_ip || '',\n    destination_ip: alert.data?.dstip || alert.data?.dst_ip || '',\n    source_port: alert.data?.srcport || '',\n    destination_port: alert.data?.dstport || '',\n    process_name: alert.data?.program_name || alert.data?.process?.name || '',\n    file_path: alert.syscheck?.path || alert.data?.file || '',\n    full_log: (alert.full_log || '').substring(0, 500),\n    location: alert.location || '',\n    sca_policy: alert.data?.sca?.policy || '',\n    sca_score: alert.data?.sca?.score || ''\n  });\n}\n\nreturn [{\n  json: {\n    alerts: filteredAlerts,\n    totalAlerts: filteredAlerts.length,\n    filteredOut: filteredOut,\n    originalCount: hits.length,\n    indexerTotal: inputData.hits?.total?.value || 0\n  }\n}];"
-            },
+            "parameters": {"jsCode": "const KNOWN_FALSE_POSITIVE_RULE_IDS = [];\nconst inputData = $input.first().json;\nconst hits = inputData.hits?.hits || [];\nif (hits.length === 0) return [{ json: { alerts: [], totalAlerts: 0, filteredOut: 0 } }];\nconst filteredAlerts = [];\nlet filteredOut = 0;\nfor (const hit of hits) {\n  const alert = hit._source;\n  const ruleId = String(alert.rule?.id || '');\n  if (KNOWN_FALSE_POSITIVE_RULE_IDS.includes(ruleId)) { filteredOut++; continue; }\n  filteredAlerts.push({\n    alert_id: hit._id || 'unknown', timestamp: alert.timestamp || '',\n    agent_id: alert.agent?.id || '', agent_name: alert.agent?.name || 'unknown',\n    agent_ip: alert.agent?.ip || '', rule_id: ruleId,\n    rule_level: alert.rule?.level || 0, rule_description: alert.rule?.description || '',\n    rule_groups: (alert.rule?.groups || []).join(', '),\n    rule_mitre: alert.rule?.mitre?.technique || [], rule_pci_dss: alert.rule?.pci_dss || [],\n    source_ip: alert.data?.srcip || alert.data?.src_ip || '',\n    destination_ip: alert.data?.dstip || alert.data?.dst_ip || '',\n    source_port: alert.data?.srcport || '', destination_port: alert.data?.dstport || '',\n    process_name: alert.data?.program_name || alert.data?.process?.name || '',\n    file_path: alert.syscheck?.path || alert.data?.file || '',\n    full_log: (alert.full_log || '').substring(0, 500), location: alert.location || '',\n    sca_policy: alert.data?.sca?.policy || '', sca_score: alert.data?.sca?.score || ''\n  });\n}\nreturn [{ json: { alerts: filteredAlerts, totalAlerts: filteredAlerts.length, filteredOut, originalCount: hits.length, indexerTotal: inputData.hits?.total?.value || 0 } }];"},
             "id": "filter-fp",
             "name": "Filter Known False Positives",
-            "position": [
-                720,
-                0
-            ],
+            "position": [720, 0],
             "type": "n8n-nodes-base.code",
             "typeVersion": 2
         },
         {
-            "parameters": {
-                "conditions": {
-                    "combinator": "and",
-                    "conditions": [
-                        {
-                            "id": "condition-alerts-exist",
-                            "leftValue": "={{ $json.totalAlerts }}",
-                            "operator": {
-                                "operation": "gt",
-                                "type": "number"
-                            },
-                            "rightValue": 0
-                        }
-                    ],
-                    "options": {
-                        "caseSensitive": true,
-                        "leftValue": "",
-                        "typeValidation": "strict"
-                    }
-                },
-                "options": {}
-            },
+            "parameters": {"conditions": {"combinator": "and", "conditions": [{"id": "condition-alerts-exist", "leftValue": "={{ $json.totalAlerts }}", "operator": {"operation": "gt", "type": "number"}, "rightValue": 0}], "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict"}}, "options": {}},
             "id": "if-alerts-exist",
             "name": "Any Alerts?",
-            "position": [
-                960,
-                0
-            ],
+            "position": [960, 0],
             "type": "n8n-nodes-base.if",
             "typeVersion": 2
         },
         {
-            "parameters": {
-                "jsCode": "const alerts = $input.first().json.alerts;\nconst BATCH_SIZE = 5;\nconst batches = [];\nfor (let i = 0; i < alerts.length; i += BATCH_SIZE) {\n  const batch = alerts.slice(i, i + BATCH_SIZE);\n  batches.push({ json: { batch_id: Math.floor(i / BATCH_SIZE) + 1, total_batches: Math.ceil(alerts.length / BATCH_SIZE), alerts: batch, alert_count: batch.length, wazuh_token: $node['Wazuh Authenticate'].json.data.token } });\n}\nreturn batches;"
-            },
+            "parameters": {"jsCode": "const alerts = $input.first().json.alerts;\nconst BATCH_SIZE = 5;\nconst batches = [];\nfor (let i = 0; i < alerts.length; i += BATCH_SIZE) {\n  const batch = alerts.slice(i, i + BATCH_SIZE);\n  batches.push({ json: { batch_id: Math.floor(i / BATCH_SIZE) + 1, total_batches: Math.ceil(alerts.length / BATCH_SIZE), alerts: batch, alert_count: batch.length, wazuh_token: $node['Wazuh Authenticate'].json.data.token } });\n}\nreturn batches;"},
             "id": "prepare-batches",
             "name": "Prepare Alert Batches",
-            "position": [
-                1200,
-                -96
-            ],
+            "position": [1200, -96],
             "type": "n8n-nodes-base.code",
             "typeVersion": 2
         },
         {
-            "parameters": {
-                "agent": "openAiFunctionsAgent",
-                "promptType": "define",
-                "text": "=Analyze the following batch of Wazuh security alerts. For EACH alert, determine if it is a TRUE POSITIVE or FALSE POSITIVE.\n\nAlert Batch ({{ $json.alert_count }} alerts):\n```json\n{{ JSON.stringify($json.alerts, null, 2) }}\n```\n\nFor each alert:\n1. Review the rule description, severity level, source/destination IPs, and log data\n2. Use the SSH tool to connect to the affected server (agent IP: use the agent_ip field) and verify the alert\n3. Use the Wazuh API tool to get more context about the agent and recent alerts\n4. Classify each alert and provide your findings\n\nRespond with a valid JSON array. Each element must have these exact fields:\n{\"rule_id\": \"string\", \"alert_description\": \"string\", \"severity\": number, \"agent_name\": \"string\", \"agent_ip\": \"string\", \"classification\": \"TRUE_POSITIVE\" or \"FALSE_POSITIVE\", \"confidence\": number, \"evidence\": \"string\", \"solution\": \"string\", \"commands_run\": [\"array\"]}",
-                "options": {
-                    "systemMessage": "You are a senior security analyst. Analyze Wazuh SIEM alerts and classify them as TRUE_POSITIVE or FALSE_POSITIVE. Use SSH to verify alerts on target servers and the Wazuh API for additional context. Be thorough but concise. Always respond with valid JSON.",
-                    "maxIterations": 15
-                }
-            },
+            "parameters": {"agent": "openAiFunctionsAgent", "promptType": "define", "text": "=Analyze the following batch of Wazuh security alerts. For EACH alert, determine if it is a TRUE POSITIVE or FALSE POSITIVE.\n\nAlert Batch ({{ $json.alert_count }} alerts):\n```json\n{{ JSON.stringify($json.alerts, null, 2) }}\n```\n\nFor each alert:\n1. Review the rule description, severity level, source/destination IPs, and log data\n2. ATTEMPT to use the SSH tool to verify on the affected server (use agent_ip field). SSH may fail \u2014 if it does, log it and proceed using rule-based heuristics below.\n3. Use the Wazuh API tool to get more context about the agent and recent alerts.\n4. Apply these classification rules when SSH is unavailable:\n   - Rule 510 (trojaned system binaries like chsh, chfn, passwd): TRUE_POSITIVE unless system was recently updated. These are critical integrity violations.\n   - Rule 550 (file integrity checksum changed):\n     * /etc/pve/* files, VM .conf files, .clusterlog, .rrd, .vmlist, .version: FALSE_POSITIVE (normal Proxmox operations)\n     * /etc/ld.so.cache, /boot/grub/grub.cfg, /boot/vmlinuz: FALSE_POSITIVE if a kernel/library update is likely\n     * System binaries (/usr/bin/*, /usr/sbin/*): TRUE_POSITIVE \u2014 binary modification is suspicious\n     * /etc/passwd, /etc/shadow, /etc/sudoers: TRUE_POSITIVE \u2014 credential file modification\n     * Backup shadow files (/etc/gshadow-, /etc/group-, /etc/subuid-, /etc/subgid-): FALSE_POSITIVE\n   - Rules 23504/23505 (CVE vulnerability detections):\n     * Severity >= 10 (HIGH/CRITICAL): TRUE_POSITIVE \u2014 active vulnerability requiring patching\n     * Severity 7-9 (MEDIUM): TRUE_POSITIVE if CVE has known exploits, FALSE_POSITIVE if purely theoretical\n   - Authentication failures / brute force (rules 5710-5720): TRUE_POSITIVE if > 5 attempts\n5. CRITICAL: SSH failure alone is NEVER a valid reason to classify an alert as FALSE_POSITIVE.\n6. Evidence field MUST explain your classification logic based on rule content and file paths \u2014 not simply 'SSH error'.\n\nRespond with a valid JSON array. Each element must have these exact fields:\n{\"rule_id\": \"string\", \"alert_description\": \"string\", \"severity\": number, \"agent_name\": \"string\", \"agent_ip\": \"string\", \"classification\": \"TRUE_POSITIVE\" or \"FALSE_POSITIVE\", \"confidence\": number, \"evidence\": \"string\", \"solution\": \"string\", \"commands_run\": [\"array\"]}", "options": {"systemMessage": "You are a senior security analyst. Analyze Wazuh SIEM alerts and classify them as TRUE_POSITIVE or FALSE_POSITIVE. Use SSH to verify alerts on target servers and the Wazuh API for additional context. When SSH is unavailable, use your security expertise and rule-based heuristics to classify alerts \u2014 SSH failure alone must NEVER result in a FALSE_POSITIVE classification. Be thorough but concise. Always respond with valid JSON.", "maxIterations": 15}},
             "id": "ai-agent",
             "name": "Security Analyst Agent",
-            "position": [
-                1440,
-                -96
-            ],
+            "position": [1440, -96],
             "type": "@n8n/n8n-nodes-langchain.agent",
             "typeVersion": 1.7
         },
         {
-            "parameters": {
-                "model": {
-                    "mode": "id",
-                    "value": "gpt-4o"
-                },
-                "builtInTools": {},
-                "options": {
-                    "temperature": 0.1
-                }
-            },
+            "parameters": {"model": {"mode": "id", "value": "gpt-5-mini"}, "builtInTools": {}, "options": {}},
             "id": "openai-model",
-            "name": "GPT-4o",
-            "position": [
-                1344,
-                160
-            ],
+            "name": "GPT-5-mini",
+            "position": [1344, 160],
             "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
             "typeVersion": 1.3,
-            "credentials": {
-                "openAiApi": {
-                    "id": "xqbNKVZyoRI2FKTt",
-                    "name": "OpenAi account"
-                }
-            }
+            "credentials": {"openAiApi": {"id": "xqbNKVZyoRI2FKTt", "name": "OpenAi account"}}
         },
         {
-            "parameters": {
-                "description": "Query the Wazuh SIEM API. Send the API endpoint path as input (e.g. /agents, /agents/001, /vulnerability/001). Auth token is included automatically.",
-                "jsCode": "// Wazuh API Query Tool\n// Input: query = the API endpoint path, e.g. \"/agents\" or \"/vulnerability/001\"\nconst endpoint = query.trim();\nif (!endpoint.startsWith('/')) {\n  return 'ERROR: Endpoint must start with /. Example: /agents or /vulnerability/001';\n}\n\nlet token;\ntry {\n  token = $('Wazuh Authenticate').item.json.data.token;\n} catch(e) {\n  return 'ERROR: Could not get Wazuh auth token.';\n}\n\nconst url = 'https://192.168.1.199:55000' + endpoint;\ntry {\n  const response = await fetch(url, {\n    method: 'GET',\n    headers: { 'Authorization': 'Bearer ' + token }\n  });\n  const data = await response.text();\n  if (data.length > 4000) {\n    return data.substring(0, 4000) + '\\n... [TRUNCATED]';\n  }\n  return data;\n} catch(error) {\n  return 'API Error: ' + error.message;\n}"
-            },
+            "parameters": {"description": "Query the Wazuh SIEM API.", "jsCode": "const endpoint = query.trim();\nif (!endpoint.startsWith('/')) return 'ERROR: Endpoint must start with /';\nlet token;\ntry { token = $('Wazuh Authenticate').item.json.data.token; } catch(e) { return 'ERROR: Could not get token.'; }\nconst url = 'https://192.168.1.199:55000' + endpoint;\ntry {\n  const response = await fetch(url, { method: 'GET', headers: { 'Authorization': 'Bearer ' + token } });\n  const data = await response.text();\n  return data.length > 4000 ? data.substring(0, 4000) + '\\n... [TRUNCATED]' : data;\n} catch(error) { return 'API Error: ' + error.message; }"},
             "id": "wazuh-api-tool",
             "name": "Wazuh API Query Tool",
-            "position": [
-                1664,
-                160
-            ],
+            "position": [1664, 160],
             "type": "@n8n/n8n-nodes-langchain.toolCode",
             "typeVersion": 1.3
         },
         {
-            "parameters": {
-                "jsCode": "const allItems = $input.all();\nconst truePositives = [];\nconst falsePositives = [];\nconst errors = [];\nfor (const item of allItems) {\n  try {\n    let agentOutput = item.json.output || item.json.text || '';\n    const jsonMatch = agentOutput.match(/\\[\\s*\\{[\\s\\S]*\\}\\s*\\]/);\n    if (jsonMatch) agentOutput = jsonMatch[0];\n    let results;\n    try { results = JSON.parse(agentOutput); } catch (e) {\n      const s = agentOutput.indexOf('['), en = agentOutput.lastIndexOf(']');\n      if (s !== -1 && en !== -1) results = JSON.parse(agentOutput.substring(s, en + 1));\n      else throw e;\n    }\n    if (!Array.isArray(results)) results = [results];\n    for (const r of results) { if (r.classification === 'TRUE_POSITIVE') truePositives.push(r); else falsePositives.push(r); }\n  } catch (err) { errors.push({ error: err.message, raw: (item.json.output || '').substring(0, 200) }); }\n}\ntruePositives.sort((a, b) => (b.severity || 0) - (a.severity || 0));\nreturn [{ json: { analysis_timestamp: new Date().toISOString(), summary: { total_analyzed: truePositives.length + falsePositives.length, true_positives: truePositives.length, false_positives: falsePositives.length, parse_errors: errors.length }, true_positives: truePositives, false_positives: falsePositives, errors } }];"
-            },
+            "parameters": {"jsCode": "const allItems = $input.all();\nconst truePositives = [], falsePositives = [], errors = [];\nfor (const item of allItems) {\n  try {\n    let agentOutput = item.json.output || item.json.text || '';\n    const jsonMatch = agentOutput.match(/\\[\\s*\\{[\\s\\S]*\\}\\s*\\]/);\n    if (jsonMatch) agentOutput = jsonMatch[0];\n    let results;\n    try { results = JSON.parse(agentOutput); } catch (e) {\n      const s = agentOutput.indexOf('['), en = agentOutput.lastIndexOf(']');\n      if (s !== -1 && en !== -1) results = JSON.parse(agentOutput.substring(s, en + 1)); else throw e;\n    }\n    if (!Array.isArray(results)) results = [results];\n    for (const r of results) { if (r.classification === 'TRUE_POSITIVE') truePositives.push(r); else falsePositives.push(r); }\n  } catch (err) { errors.push({ error: err.message, raw: (item.json.output || '').substring(0, 200) }); }\n}\ntruePositives.sort((a, b) => (b.severity || 0) - (a.severity || 0));\nreturn [{ json: { analysis_timestamp: new Date().toISOString(), summary: { total_analyzed: truePositives.length + falsePositives.length, true_positives: truePositives.length, false_positives: falsePositives.length, parse_errors: errors.length }, true_positives: truePositives, false_positives: falsePositives, errors } }];"},
             "id": "consolidate",
             "name": "Consolidate Results",
-            "position": [
-                1712,
-                -96
-            ],
+            "position": [1712, -96],
             "type": "n8n-nodes-base.code",
             "typeVersion": 2
         },
         {
-            "parameters": {
-                "conditions": {
-                    "combinator": "and",
-                    "conditions": [
-                        {
-                            "id": "condition-tp",
-                            "leftValue": "={{ $json.summary.true_positives }}",
-                            "operator": {
-                                "operation": "gt",
-                                "type": "number"
-                            },
-                            "rightValue": 0
-                        }
-                    ],
-                    "options": {
-                        "caseSensitive": true,
-                        "leftValue": "",
-                        "typeValidation": "strict"
-                    }
-                },
-                "options": {}
-            },
+            "parameters": {"conditions": {"combinator": "and", "conditions": [{"id": "condition-tp", "leftValue": "={{ $json.summary.true_positives }}", "operator": {"operation": "gt", "type": "number"}, "rightValue": 0}], "options": {"caseSensitive": true, "leftValue": "", "typeValidation": "strict"}}, "options": {}},
             "id": "if-true-positives",
             "name": "Has True Positives?",
-            "position": [
-                1952,
-                -96
-            ],
+            "position": [1952, -96],
             "type": "n8n-nodes-base.if",
             "typeVersion": 2
         },
         {
-            "parameters": {
-                "jsCode": "// Build Jira ticket description from AI analysis\nconst data = $input.first().json;\nconst tp = data.true_positives || [];\nconst fp = data.false_positives || [];\nconst summary = data.summary || {};\nconst timestamp = new Date().toISOString();\n\n// ADF (Atlassian Document Format) for rich Jira description\nlet description = `h2. \ud83d\udee1\ufe0f Wazuh Security Alert Triage Report\\n`;\ndescription += `*Date:* ${new Date().toLocaleDateString('en-US', { dateStyle: 'full' })}\\n`;\ndescription += `*Analyzed:* ${summary.total_analyzed || 0} alerts | *True Positives:* ${summary.true_positives || 0} | *False Positives:* ${summary.false_positives || 0}\\n\\n`;\n\ndescription += `h3. \ud83d\udea8 True Positives Requiring Action\\n`;\ndescription += `||Rule ID||Description||Severity||Server||Confidence||\\n`;\n\nfor (const a of tp) {\n  const sev = a.severity >= 12 ? '\ud83d\udd34 Critical' : a.severity >= 10 ? '\ud83d\udfe0 High' : a.severity >= 7 ? '\ud83d\udfe1 Medium' : '\u26aa Low';\n  description += `|${a.rule_id || 'N/A'}|${(a.alert_description || '').substring(0, 80)}|${sev} (${a.severity})|${a.agent_name || 'N/A'} (${a.agent_ip || ''})|${a.confidence || 'N/A'}%|\\n`;\n}\n\ndescription += `\\nh3. Evidence & Solutions\\n`;\nfor (const a of tp) {\n  description += `h4. Rule ${a.rule_id}: ${(a.alert_description || '').substring(0, 60)}\\n`;\n  description += `*Server:* ${a.agent_name || 'N/A'} (${a.agent_ip || ''})\\n`;\n  description += `*Evidence:* ${a.evidence || 'None'}\\n`;\n  description += `*Solution:* ${a.solution || 'Manual investigation required'}\\n\\n`;\n}\n\nif (fp.length > 0) {\n  description += `h3. \u2705 False Positives (${fp.length})\\n`;\n  description += `||Rule||Description||Server||\\n`;\n  for (const a of fp) {\n    description += `|${a.rule_id}|${(a.alert_description || '').substring(0, 80)}|${a.agent_name || 'N/A'}|\\n`;\n  }\n}\n\ndescription += `\\n----\\n_Generated by Wazuh Alert Triage AI Agent_`;\n\n// Determine priority based on max severity\nconst maxSev = Math.max(...tp.map(a => a.severity || 0));\nlet priority = 'Medium';\nif (maxSev >= 12) priority = 'Highest';\nelse if (maxSev >= 10) priority = 'High';\nelse if (maxSev >= 7) priority = 'Medium';\n\nconst ticketSummary = `\ud83d\udee1\ufe0f Wazuh Alert Triage \u2014 ${tp.length} True Positive(s) | ${new Date().toLocaleDateString('en-US')}`;\n\nreturn [{ json: { \n  ticketSummary, \n  ticketDescription: description, \n  priority,\n  true_positives: tp, \n  false_positives: fp, \n  summary,\n  labels: ['wazuh', 'security-alert', 'ai-triage']\n} }];"
-            },
+            "parameters": {"jsCode": "// Build one Jira ticket per unique rule_id + agent_name combination\nconst data = $input.first().json;\nconst tp = data.true_positives || [];\nconst summary = data.summary || {};\nif (tp.length === 0) return [];\nconst groups = {};\nfor (const alert of tp) {\n  const key = `${alert.rule_id}||${alert.agent_name}`;\n  if (!groups[key]) groups[key] = { rule_id: alert.rule_id, agent_name: alert.agent_name, agent_ip: alert.agent_ip, severity: alert.severity, alerts: [] };\n  groups[key].alerts.push(alert);\n}\nconst items = [];\nfor (const key of Object.keys(groups)) {\n  const group = groups[key];\n  const count = group.alerts.length;\n  const maxSev = Math.max(...group.alerts.map(a => a.severity || 0));\n  const sevLabel = maxSev >= 12 ? 'Critical' : maxSev >= 10 ? 'High' : maxSev >= 7 ? 'Medium' : 'Low';\n  const firstAlert = group.alerts[0];\n  let desc = `h2. Security Alert: Rule ${group.rule_id} \u2014 ${firstAlert.alert_description || 'N/A'}\\n`;\n  desc += `*Server:* ${group.agent_name} (${group.agent_ip || 'N/A'}) | *Severity:* ${sevLabel} (${maxSev}) | *Occurrences:* ${count}\\n`;\n  desc += `*Date:* ${new Date().toLocaleDateString('en-US', { dateStyle: 'full' })}\\n\\n`;\n  desc += `h3. Evidence\\n${(firstAlert.evidence || 'N/A').substring(0, 500)}\\n\\n`;\n  desc += `h3. Recommended Action\\n${(firstAlert.solution || 'Manual investigation required').substring(0, 500)}\\n\\n`;\n  if (firstAlert.commands_run?.length > 0) desc += `h3. Verification Commands\\n{code}\\n${firstAlert.commands_run.slice(0,5).join('\\n')}\\n{code}\\n\\n`;\n  if (count > 1) {\n    desc += `h3. All Occurrences (${count} total)\\n||#||Description||Confidence||\\n`;\n    for (let i = 0; i < Math.min(count, 20); i++) {\n      const a = group.alerts[i];\n      desc += `|${i+1}|${(a.alert_description || 'N/A').substring(0,80)}|${a.confidence||'N/A'}%|\\n`;\n    }\n    if (count > 20) desc += `\\n_... and ${count-20} more occurrences._\\n`;\n  }\n  const ticketSummary = `[Wazuh] Rule ${group.rule_id}: ${(firstAlert.alert_description||'Security Alert').substring(0,80)} \u2014 ${group.agent_name} (${count}x)`;\n  items.push({ json: { ticketSummary, ticketDescription: desc, rule_id: group.rule_id, agent_name: group.agent_name, severity: maxSev, severity_label: sevLabel, occurrence_count: count, analysis_summary: summary } });\n}\nitems.sort((a, b) => (b.json.severity || 0) - (a.json.severity || 0));\nreturn items;"},
             "id": "build-jira",
             "name": "Build Jira Ticket",
-            "position": [
-                2192,
-                -208
-            ],
+            "position": [2192, -208],
             "type": "n8n-nodes-base.code",
             "typeVersion": 2
         },
         {
-            "parameters": {
-                "project": "SCRUM",
-                "issueType": "Task",
-                "summary": "={{ $json.ticketSummary }}",
-                "additionalFields": {
-                    "description": "={{ $json.ticketDescription }}",
-                    "labels": "={{ $json.labels }}",
-                    "priority": "={{ $json.priority }}"
-                }
-            },
+            "parameters": {"project": {"__rl": true, "value": "10000", "mode": "list", "cachedResultName": "SecOps"}, "issueType": {"__rl": true, "value": "10003", "mode": "list", "cachedResultName": "Task"}, "summary": "={{ $json.ticketSummary }}", "additionalFields": {"description": "={{ $json.ticketDescription }}"}},
             "id": "jira-create",
             "name": "Create Jira Ticket",
-            "position": [
-                2432,
-                -208
-            ],
+            "position": [2432, -208],
             "type": "n8n-nodes-base.jira",
             "typeVersion": 1,
-            "credentials": {
-                "jiraSoftwareCloudApi": {
-                    "id": "RPIr94ZVhXBseZUA",
-                    "name": "Jira SW Cloud account"
-                }
-            }
+            "credentials": {"jiraSoftwareCloudApi": {"id": "RPIr94ZVhXBseZUA", "name": "Jira SW Cloud account"}}
         },
         {
-            "parameters": {
-                "jsCode": "// Process False Positives: build email content + prepare Wazuh closure\nconst data = $input.first().json;\nconst fp = data.false_positives || [];\nconst summary = data.summary || {};\nconst ts = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'full', timeStyle: 'short' });\n\nif (fp.length === 0) {\n  return [{ json: { message: 'No false positives', count: 0, emailSubject: '', emailBody: '', alertIds: [] } }];\n}\n\n// Build FP email\nlet html = '<div style=\"font-family:Segoe UI,sans-serif;max-width:700px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);\">';\nhtml += '<div style=\"background:linear-gradient(135deg,#2c3e50,#3498db);color:#fff;padding:25px 30px;\">';\nhtml += '<h1 style=\"margin:0;font-size:22px;\">\ud83d\udccb False Positive Alert Report</h1>';\nhtml += '<p style=\"margin:5px 0 0;opacity:0.8;\">' + ts + '</p></div>';\nhtml += '<div style=\"padding:20px 30px;\">';\nhtml += '<p><strong>' + fp.length + '</strong> alert(s) classified as false positives and closed in Wazuh.</p>';\nhtml += '<table style=\"width:100%;border-collapse:collapse;font-size:13px;\">';\nhtml += '<tr style=\"background:#e9ecef;\"><th style=\"padding:8px;text-align:left;border:1px solid #dee2e6;\">Rule ID</th><th style=\"padding:8px;text-align:left;border:1px solid #dee2e6;\">Description</th><th style=\"padding:8px;text-align:left;border:1px solid #dee2e6;\">Server</th><th style=\"padding:8px;text-align:left;border:1px solid #dee2e6;\">Evidence</th></tr>';\n\nfor (const a of fp) {\n  html += '<tr>';\n  html += '<td style=\"padding:8px;border:1px solid #dee2e6;\">' + (a.rule_id || 'N/A') + '</td>';\n  html += '<td style=\"padding:8px;border:1px solid #dee2e6;\">' + ((a.alert_description || '').substring(0, 100)) + '</td>';\n  html += '<td style=\"padding:8px;border:1px solid #dee2e6;\">' + (a.agent_name || 'N/A') + ' (' + (a.agent_ip || '') + ')</td>';\n  html += '<td style=\"padding:8px;border:1px solid #dee2e6;\">' + ((a.evidence || 'N/A').substring(0, 120)) + '</td>';\n  html += '</tr>';\n}\nhtml += '</table></div>';\nhtml += '<div style=\"background:#d4edda;padding:15px 30px;border-radius:0 0 8px 8px;\"><p style=\"margin:0;color:#155724;font-size:13px;\">\u2705 These alerts have been marked as False Positive in Wazuh.</p></div></div>';\n\n// Collect alert IDs for Wazuh closure (from original alert data if available)\nconst alertIds = fp.map(a => a.alert_id || a.rule_id).filter(Boolean);\n\nconst emailSubject = '\ud83d\udccb Wazuh FP Report \u2014 ' + new Date().toLocaleDateString('en-US') + ' | ' + fp.length + ' False Positive(s)';\n\nreturn [{ json: {\n  message: fp.length + ' false positive(s) processed',\n  count: fp.length,\n  false_positives: fp,\n  emailSubject: emailSubject,\n  emailBody: html,\n  alertIds: alertIds,\n  summary: summary,\n  // Build bulk update script for Wazuh Indexer\n  wazuhBulkClose: fp.map(a => ({\n    rule_id: a.rule_id,\n    agent_name: a.agent_name,\n    reason: 'False Positive - AI Triage',\n    evidence: a.evidence || 'Automated classification'\n  }))\n} }];"
-            },
+            "parameters": {"jsCode": "const data = $input.first().json;\nconst fp = data.false_positives || [];\nconst summary = data.summary || {};\nconst ts = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'full', timeStyle: 'short' });\nif (fp.length === 0) return [{ json: { message: 'No false positives', count: 0, emailSubject: '', emailBody: '', alertIds: [] } }];\nlet html = '<div style=\"font-family:Segoe UI,sans-serif;max-width:700px;\">'; html += '<h1>False Positive Alert Report</h1><p>' + ts + '</p>';\nhtml += '<p><strong>' + fp.length + '</strong> alert(s) classified as false positives.</p>';\nhtml += '<table style=\"width:100%;border-collapse:collapse;\"><tr><th>Rule ID</th><th>Description</th><th>Server</th><th>Evidence</th></tr>';\nfor (const a of fp) { html += '<tr><td>' + (a.rule_id||'N/A') + '</td><td>' + (a.alert_description||'').substring(0,100) + '</td><td>' + (a.agent_name||'N/A') + '</td><td>' + (a.evidence||'N/A').substring(0,120) + '</td></tr>'; }\nhtml += '</table></div>';\nconst alertIds = fp.map(a => a.alert_id || a.rule_id).filter(Boolean);\nreturn [{ json: { message: fp.length + ' false positive(s) processed', count: fp.length, false_positives: fp, emailSubject: 'Wazuh FP Report \u2014 ' + new Date().toLocaleDateString('en-US') + ' | ' + fp.length + ' False Positive(s)', emailBody: html, alertIds, summary, wazuhBulkClose: fp.map(a => ({ rule_id: a.rule_id, agent_name: a.agent_name, reason: 'False Positive - AI Triage', evidence: a.evidence || 'Automated classification' })) } }];"},
             "id": "manage-fp",
             "name": "Log False Positives",
-            "position": [
-                2192,
-                0
-            ],
+            "position": [2192, -32],
             "type": "n8n-nodes-base.code",
             "typeVersion": 2
         },
         {
-            "parameters": {
-                "description": "Execute a read-only command on a Wazuh agent via SSH. Send JSON: {\"host\":\"IP\",\"command\":\"cmd\"}. Valid hosts: 192.168.1.185 (pve), 192.168.1.186 (n8nsrv), 192.168.1.188 (aisrv), 192.168.1.190 (devsrv), 192.168.1.191 (prodsrv). Only read-only commands allowed.",
-                "jsCode": "// SSH Command Execution via Webhook\nlet input;\ntry {\n  input = typeof query === 'string' ? JSON.parse(query) : query;\n} catch(e) {\n  return 'ERROR: Send JSON like {\"host\":\"192.168.1.185\",\"command\":\"tail -20 /var/log/auth.log\"}';\n}\n\nconst host = input.host;\nconst command = input.command;\n\nif (!host || !command) {\n  return 'ERROR: Both host and command required.';\n}\n\nconst VALID = ['192.168.1.185','192.168.1.186','192.168.1.188','192.168.1.190','192.168.1.191'];\nif (!VALID.includes(host)) {\n  return 'ERROR: Invalid host. Valid: ' + VALID.join(', ');\n}\n\ntry {\n  const resp = await fetch('https://n8n.ozoar.io/webhook/ssh-executor', {\n    method: 'POST',\n    headers: {'Content-Type': 'application/json'},\n    body: JSON.stringify({host, command})\n  });\n  const result = await resp.text();\n  if (result.length > 3000) {\n    return result.substring(0, 3000) + '\\n... [TRUNCATED]';\n  }\n  return result || 'Command executed with no output.';\n} catch(error) {\n  return 'SSH Error: ' + error.message;\n}"
-            },
+            "parameters": {"description": "Execute a read-only command on a Wazuh agent via SSH.", "jsCode": "let input;\ntry { input = typeof query === 'string' ? JSON.parse(query) : query; } catch(e) { return 'ERROR: Send JSON like {\"host\":\"192.168.1.185\",\"command\":\"cmd\"}'; }\nconst host = input.host, command = input.command;\nif (!host || !command) return 'ERROR: Both host and command required.';\nconst VALID = ['192.168.1.185','192.168.1.186','192.168.1.188','192.168.1.190','192.168.1.191'];\nif (!VALID.includes(host)) return 'ERROR: Invalid host. Valid: ' + VALID.join(', ');\ntry {\n  const resp = await fetch('https://n8n.ozoar.io/webhook/ssh-executor', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({host, command}) });\n  const result = await resp.text();\n  return result.length > 3000 ? result.substring(0, 3000) + '\\n... [TRUNCATED]' : result || 'Command executed with no output.';\n} catch(error) { return 'SSH Error: ' + error.message; }"},
             "id": "ssh-tool",
             "name": "SSH Verification Tool",
+            "position": [1504, 160],
             "type": "@n8n/n8n-nodes-langchain.toolCode",
-            "typeVersion": 1.3,
-            "position": [
-                1504,
-                160
-            ]
+            "typeVersion": 1.3
         },
         {
+            "parameters": {"sendTo": "maly.iphone@gmail.com", "subject": "={{ $json.emailSubject }}", "message": "={{ $json.emailBody }}", "options": {}},
             "id": "gmail-fp",
             "name": "Email FP Report",
-            "position": [
-                2432,
-                0
-            ],
+            "position": [2432, 0],
             "type": "n8n-nodes-base.gmail",
             "typeVersion": 2.1,
-            "credentials": {},
-            "parameters": {
-                "sendTo": "maly.iphone@gmail.com",
-                "subject": "={{ $json.emailSubject }}",
-                "message": "={{ $json.emailBody }}",
-                "options": {}
-            }
+            "credentials": {"gmailOAuth2": {"id": "E9z811rr6mAa5Qd0", "name": "Gmail account"}}
         },
         {
+            "parameters": {"jsCode": "const data = $input.first().json;\nconst fpList = data.wazuhBulkClose || [];\nif (fpList.length === 0) return [{ json: { message: 'No FP alerts to close', closed: 0 } }];\nconst closedRules = fpList.map(fp => ({ rule_id: fp.rule_id, agent: fp.agent_name, reason: fp.reason, closed_at: new Date().toISOString() }));\nreturn [{ json: { message: closedRules.length + ' false positive alerts logged for closure', closed: closedRules.length, closedRules } }];"},
             "id": "close-fp-wazuh",
             "name": "Close FP in Wazuh",
-            "position": [
-                2432,
-                120
-            ],
+            "position": [2432, 128],
             "type": "n8n-nodes-base.code",
-            "typeVersion": 2,
-            "parameters": {
-                "jsCode": "// Close false positive alerts in Wazuh Indexer\n// Adds a triage_status field to alert documents\nconst data = $input.first().json;\nconst fpList = data.wazuhBulkClose || [];\nconst token = $('Wazuh Authenticate').item.json.data.token;\n\nif (fpList.length === 0) {\n  return [{ json: { message: 'No FP alerts to close', closed: 0 } }];\n}\n\n// Log the FP rule IDs for future filtering\nconst closedRules = [];\nfor (const fp of fpList) {\n  closedRules.push({\n    rule_id: fp.rule_id,\n    agent: fp.agent_name,\n    reason: fp.reason,\n    closed_at: new Date().toISOString()\n  });\n}\n\nreturn [{ json: {\n  message: closedRules.length + ' false positive alerts logged for closure',\n  closed: closedRules.length,\n  closedRules: closedRules\n} }];"
-            }
+            "typeVersion": 2
         }
     ],
     "connections": {
-        "Any Alerts?": {
-            "main": [
-                [
-                    {
-                        "index": 0,
-                        "node": "Prepare Alert Batches",
-                        "type": "main"
-                    }
-                ]
-            ]
-        },
-        "Consolidate Results": {
-            "main": [
-                [
-                    {
-                        "index": 0,
-                        "node": "Has True Positives?",
-                        "type": "main"
-                    }
-                ]
-            ]
-        },
-        "Daily 6 AM": {
-            "main": [
-                [
-                    {
-                        "index": 0,
-                        "node": "Wazuh Authenticate",
-                        "type": "main"
-                    }
-                ]
-            ]
-        },
-        "Fetch Wazuh Alerts": {
-            "main": [
-                [
-                    {
-                        "index": 0,
-                        "node": "Filter Known False Positives",
-                        "type": "main"
-                    }
-                ]
-            ]
-        },
-        "Filter Known False Positives": {
-            "main": [
-                [
-                    {
-                        "index": 0,
-                        "node": "Any Alerts?",
-                        "type": "main"
-                    }
-                ]
-            ]
-        },
-        "GPT-4o": {
-            "ai_languageModel": [
-                [
-                    {
-                        "index": 0,
-                        "node": "Security Analyst Agent",
-                        "type": "ai_languageModel"
-                    }
-                ]
-            ]
-        },
-        "Has True Positives?": {
-            "main": [
-                [
-                    {
-                        "index": 0,
-                        "node": "Build Jira Ticket",
-                        "type": "main"
-                    },
-                    {
-                        "index": 0,
-                        "node": "Log False Positives",
-                        "type": "main"
-                    }
-                ],
-                [
-                    {
-                        "index": 0,
-                        "node": "Log False Positives",
-                        "type": "main"
-                    }
-                ]
-            ]
-        },
-        "Prepare Alert Batches": {
-            "main": [
-                [
-                    {
-                        "index": 0,
-                        "node": "Security Analyst Agent",
-                        "type": "main"
-                    }
-                ]
-            ]
-        },
-        "Security Analyst Agent": {
-            "main": [
-                [
-                    {
-                        "index": 0,
-                        "node": "Consolidate Results",
-                        "type": "main"
-                    }
-                ]
-            ]
-        },
-        "Wazuh API Query Tool": {
-            "ai_tool": [
-                [
-                    {
-                        "index": 0,
-                        "node": "Security Analyst Agent",
-                        "type": "ai_tool"
-                    }
-                ]
-            ]
-        },
-        "Wazuh Authenticate": {
-            "main": [
-                [
-                    {
-                        "index": 0,
-                        "node": "Fetch Wazuh Alerts",
-                        "type": "main"
-                    }
-                ]
-            ]
-        },
-        "SSH Verification Tool": {
-            "ai_tool": [
-                [
-                    {
-                        "node": "Security Analyst Agent",
-                        "type": "ai_tool",
-                        "index": 0
-                    }
-                ]
-            ]
-        },
-        "Build Jira Ticket": {
-            "main": [
-                [
-                    {
-                        "index": 0,
-                        "node": "Create Jira Ticket",
-                        "type": "main"
-                    }
-                ]
-            ]
-        },
-        "Log False Positives": {
-            "main": [
-                [
-                    {
-                        "index": 0,
-                        "node": "Email FP Report",
-                        "type": "main"
-                    },
-                    {
-                        "index": 0,
-                        "node": "Close FP in Wazuh",
-                        "type": "main"
-                    }
-                ]
-            ]
-        }
+        "Daily 6 AM": {"main": [[{"index": 0, "node": "Wazuh Authenticate", "type": "main"}]]},
+        "Wazuh Authenticate": {"main": [[{"index": 0, "node": "Fetch Wazuh Alerts", "type": "main"}]]},
+        "Fetch Wazuh Alerts": {"main": [[{"index": 0, "node": "Filter Known False Positives", "type": "main"}]]},
+        "Filter Known False Positives": {"main": [[{"index": 0, "node": "Any Alerts?", "type": "main"}]]},
+        "Any Alerts?": {"main": [[{"index": 0, "node": "Prepare Alert Batches", "type": "main"}]]},
+        "Prepare Alert Batches": {"main": [[{"index": 0, "node": "Security Analyst Agent", "type": "main"}]]},
+        "Security Analyst Agent": {"main": [[{"index": 0, "node": "Consolidate Results", "type": "main"}]]},
+        "Consolidate Results": {"main": [[{"index": 0, "node": "Has True Positives?", "type": "main"}]]},
+        "Has True Positives?": {"main": [[{"index": 0, "node": "Build Jira Ticket", "type": "main"}], [{"index": 0, "node": "Log False Positives", "type": "main"}]]},
+        "Build Jira Ticket": {"main": [[{"index": 0, "node": "Create Jira Ticket", "type": "main"}]]},
+        "Log False Positives": {"main": [[{"index": 0, "node": "Email FP Report", "type": "main"}, {"index": 0, "node": "Close FP in Wazuh", "type": "main"}]]},
+        "GPT-5-mini": {"ai_languageModel": [[{"index": 0, "node": "Security Analyst Agent", "type": "ai_languageModel"}]]},
+        "Wazuh API Query Tool": {"ai_tool": [[{"index": 0, "node": "Security Analyst Agent", "type": "ai_tool"}]]},
+        "SSH Verification Tool": {"ai_tool": [[{"index": 0, "node": "Security Analyst Agent", "type": "ai_tool"}]]}
     },
-    "settings": {
-        "executionOrder": "v1",
-        "callerPolicy": "workflowsFromSameOwner",
-        "availableInMCP": false
-    },
-    "staticData": null,
-    "meta": {
-        "templateCredsSetupCompleted": true
-    },
-    "pinData": {},
-    "versionId": "5ec72480-e856-4d8a-ad50-b672aa018e44",
-    "activeVersionId": null,
-    "versionCounter": 3,
-    "triggerCount": 0,
-    "tags": [],
-    "activeVersion": null
+    "settings": {"executionOrder": "v1"}
 }

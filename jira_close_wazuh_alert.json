@@ -1,0 +1,78 @@
+{
+    "id": "pXYijAuBVneDBALu",
+    "name": "Jira Ticket Closed \u2192 Close Alert in Wazuh",
+    "active": false,
+    "nodes": [
+        {
+            "id": "jira-webhook",
+            "name": "Jira Webhook",
+            "parameters": {"httpMethod": "POST", "options": {}, "path": "jira-ticket-closed", "responseMode": "responseNode"},
+            "position": [0, 0],
+            "type": "n8n-nodes-base.webhook",
+            "typeVersion": 2
+        },
+        {
+            "id": "webhook-response",
+            "name": "Respond to Jira",
+            "parameters": {"respondWith": "text", "responseBody": "OK"},
+            "position": [240, 120],
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1
+        },
+        {
+            "id": "check-closed",
+            "name": "Is Ticket Closed?",
+            "parameters": {
+                "conditions": {"combinator": "and", "conditions": [
+                    {"id": "cond-status", "leftValue": "={{ $json.body.issue.fields.status.name }}", "operator": {"operation": "contains", "type": "string"}, "rightValue": "Done"},
+                    {"id": "cond-wazuh-label", "leftValue": "={{ $json.body.issue.fields.summary }}", "operator": {"operation": "startsWith", "type": "string"}, "rightValue": "[Wazuh]"}
+                ], "options": {}},
+                "options": {}
+            },
+            "position": [240, -80],
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2
+        },
+        {
+            "id": "parse-ticket",
+            "name": "Parse Wazuh Info from Ticket",
+            "parameters": {"jsCode": "// Extract rule_id and agent_name from Jira ticket summary\n// Format: [Wazuh] Rule {rule_id}: {description} \u2014 {agent_name} ({count}x)\nconst issue = $input.first().json.body.issue;\nconst summary = issue.fields.summary || '';\nconst issueKey = issue.key || '';\nconst closedAt = new Date().toISOString();\nconst closedBy = $input.first().json.body.user?.displayName || 'Unknown';\nconst ruleMatch = summary.match(/\\[Wazuh\\]\\s+Rule\\s+(\\d+)/);\nconst ruleId = ruleMatch ? ruleMatch[1] : null;\nconst agentMatch = summary.match(/\u2014\\s+([\\w-]+)\\s+\\(\\d+x\\)/);\nconst agentName = agentMatch ? agentMatch[1] : null;\nif (!ruleId) throw new Error(`Could not parse rule_id from: \"${summary}\"`);\nreturn [{ json: { issueKey, summary, ruleId, agentName, closedAt, closedBy } }];"},
+            "position": [480, -80],
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2
+        },
+        {
+            "id": "wazuh-auth",
+            "name": "Wazuh Authenticate",
+            "parameters": {"method": "POST", "url": "https://192.168.1.199:55000/security/user/authenticate", "authentication": "genericCredentialType", "genericAuthType": "httpBasicAuth", "options": {"allowUnauthorizedCerts": true}},
+            "position": [720, -80],
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.4,
+            "credentials": {"httpBasicAuth": {"id": "BfOV5Au7TEzJtVK4", "name": "Wazuh API"}}
+        },
+        {
+            "id": "close-in-wazuh",
+            "name": "Close Alert in Wazuh Indexer",
+            "parameters": {"jsCode": "const parsed = $('Parse Wazuh Info from Ticket').first().json;\nconst ruleId = parsed.ruleId;\nconst agentName = parsed.agentName;\nconst issueKey = parsed.issueKey;\nif (!ruleId) return [{ json: { error: 'No rule_id found', skipped: true } }];\nconst must = [\n  { term: { 'rule.id': ruleId } },\n  { range: { timestamp: { gte: 'now-7d' } } }\n];\nif (agentName) must.push({ term: { 'agent.name': agentName } });\nconst updateQuery = {\n  script: {\n    source: \"ctx._source.triage_status = 'CLOSED'; ctx._source.triage_jira_key = params.issueKey; ctx._source.triage_closed_at = params.closedAt; ctx._source.triage_closed_by = params.closedBy;\",\n    lang: 'painless',\n    params: { issueKey, closedAt: parsed.closedAt, closedBy: parsed.closedBy }\n  },\n  query: { bool: { must } }\n};\nconst url = 'https://192.168.1.199:9200/wazuh-alerts-4.x-*/_update_by_query?conflicts=proceed&refresh=true';\ntry {\n  const response = await fetch(url, {\n    method: 'POST',\n    headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + btoa('admin:admin') },\n    body: JSON.stringify(updateQuery)\n  });\n  const result = await response.json();\n  return [{ json: { success: true, ruleId, agentName, issueKey, updated: result.updated || 0, total: result.total || 0, message: `Closed ${result.updated||0} Wazuh alert(s) for Rule ${ruleId} on ${agentName||'all agents'}` } }];\n} catch (err) {\n  return [{ json: { success: false, error: err.message, ruleId, agentName, issueKey } }];\n}"},
+            "position": [960, -80],
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2
+        },
+        {
+            "id": "slack-notify",
+            "name": "Log Closure",
+            "parameters": {"jsCode": "const result = $input.first().json;\nconst ts = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });\nconsole.log(`[${ts}] Wazuh closure: ${JSON.stringify(result)}`);\nreturn [{ json: { logged: true, timestamp: ts, message: result.message || 'Closure processed', ruleId: result.ruleId, agentName: result.agentName, updated: result.updated, issueKey: result.issueKey } }];"},
+            "position": [1200, -80],
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2
+        }
+    ],
+    "connections": {
+        "Jira Webhook": {"main": [[{"index": 0, "node": "Respond to Jira", "type": "main"}, {"index": 0, "node": "Is Ticket Closed?", "type": "main"}]]},
+        "Is Ticket Closed?": {"main": [[{"index": 0, "node": "Parse Wazuh Info from Ticket", "type": "main"}]]},
+        "Parse Wazuh Info from Ticket": {"main": [[{"index": 0, "node": "Wazuh Authenticate", "type": "main"}]]},
+        "Wazuh Authenticate": {"main": [[{"index": 0, "node": "Close Alert in Wazuh Indexer", "type": "main"}]]},
+        "Close Alert in Wazuh Indexer": {"main": [[{"index": 0, "node": "Log Closure", "type": "main"}]]}
+    },
+    "settings": {"executionOrder": "v1"}
+}
